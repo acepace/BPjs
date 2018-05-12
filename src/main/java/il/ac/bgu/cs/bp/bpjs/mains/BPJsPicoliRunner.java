@@ -1,7 +1,12 @@
 package il.ac.bgu.cs.bp.bpjs.mains;
+import il.ac.bgu.cs.bp.bpjs.analysis.BProgramStateVisitedStateStore;
+import il.ac.bgu.cs.bp.bpjs.analysis.DfsBProgramVerifier;
+import il.ac.bgu.cs.bp.bpjs.analysis.Node;
+import il.ac.bgu.cs.bp.bpjs.analysis.VerificationResult;
 import il.ac.bgu.cs.bp.bpjs.execution.BProgramRunner;
 import il.ac.bgu.cs.bp.bpjs.execution.listeners.PrintBProgramRunnerListener;
 import il.ac.bgu.cs.bp.bpjs.model.BProgram;
+import il.ac.bgu.cs.bp.bpjs.model.BThreadSyncSnapshot;
 import il.ac.bgu.cs.bp.bpjs.model.eventselection.EventSelectionStrategy;
 import il.ac.bgu.cs.bp.bpjs.model.eventselection.LoggingEventSelectionStrategyDecorator;
 import il.ac.bgu.cs.bp.bpjs.model.eventselection.SimpleEventSelectionStrategy;
@@ -13,7 +18,9 @@ import picocli.CommandLine.Parameters;
 
 import java.io.*;
 import java.nio.file.Files;
+import java.util.Comparator;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -25,6 +32,9 @@ public class BPJsPicoliRunner implements Runnable {
     @Option(names = { "-v", "--verbose" }, description = "Verbose mode, will log to console steps")
     private boolean verbose = false;
 
+
+
+
     @Option(names = { "-@", "--stdin" }, description = "Receives input from stdin")
     private boolean stdin = false;
 
@@ -33,6 +43,17 @@ public class BPJsPicoliRunner implements Runnable {
 
     @Parameters(arity = "0..*", paramLabel = "FILE", description = "File(s) to process. At least one")
     private File[] inputFiles;
+
+
+    @Option(names = { "--verify" }, description = "Verification mode.")
+    private boolean verification = false;
+
+    @Option(names = { "-d", "--deadlock" }, description = "Verification mode, @|bold disables @| deadlock checking")
+    private boolean deadlock = true;
+
+    @Option(names = {"--hash" }, description = "Verification mode Use hash based node comparison")
+    private boolean hashCompare = false;
+
 
     public void run() {
         BProgram bpp = new BProgram("BPjs") {
@@ -76,12 +97,30 @@ public class BPJsPicoliRunner implements Runnable {
 
         bpp.setEventSelectionStrategy(ess);
 
-        BProgramRunner bpr = new BProgramRunner(bpp);
-        if (verbose) {
-            bpr.addListener(new PrintBProgramRunnerListener());
-        }
 
-        bpr.run();
+        if (verification) {
+            DfsBProgramVerifier sut = new DfsBProgramVerifier();
+            sut.setDetectDeadlocks(deadlock);
+            sut.setVisitedNodeStore(new BProgramStateVisitedStateStore(hashCompare));
+            try {
+                VerificationResult res =sut.verify(bpp);
+                if (res.isVerifiedSuccessfully()) {
+                    println("Program successfully verified");
+                } else {
+                    printCounterExample(res);
+                }
+            } catch (Exception e) {
+                println("Error while verifying:", e.getMessage());
+                e.printStackTrace();
+                System.exit(-3);
+            }
+        } else {
+            BProgramRunner bpr = new BProgramRunner(bpp);
+            if (verbose) {
+                bpr.addListener(new PrintBProgramRunnerListener());
+            }
+            bpr.run();
+        }
     }
 
     public static void main(String[] args) {
@@ -98,5 +137,21 @@ public class BPJsPicoliRunner implements Runnable {
         } else {
             System.out.printf("# " + template, (Object[]) params);
         }
+    }
+
+    private static void printCounterExample(VerificationResult res) {
+        System.out.println("Found a counterexample");
+        final List<Node> trace = res.getCounterExampleTrace();
+        trace.forEach(nd -> System.out.println(" " + nd.getLastEvent()));
+
+        Node last = trace.get(trace.size() - 1);
+        System.out.println("selectableEvents: " + last.getSelectableEvents());
+        last.getSystemState().getBThreadSnapshots().stream()
+                .sorted(Comparator.comparing(BThreadSyncSnapshot::getName))
+                .forEach(s -> {
+                    System.out.println(s.getName());
+                    System.out.println(s.getBSyncStatement());
+                    System.out.println();
+                });
     }
 }
